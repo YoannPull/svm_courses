@@ -47,7 +47,7 @@ from sklearn.linear_model import Perceptron
 # Options globales
 # =========================
 SAVE_FIGS     = True           # Enregistrer les figures dans FIG_DIR
-FIG_DIR       = "figures"      # Dossier de sortie pour les images
+FIG_DIR       = "figures_fr"      # Dossier de sortie pour les images
 FIG_DPI       = 300            # DPI des fichiers enregistrés
 SHOW_TITLES   = False          # Afficher les titres des figures
 SHOW_LEGENDS  = True           # Afficher les légendes
@@ -82,7 +82,7 @@ def maybe_save(fig, filename):
         # On ferme pour libérer la mémoire (et éviter toute fenêtre)
         plt.close(fig)
         plt.show = lambda *args, **kwargs: None
-    # Neutralise tout appel à plt.show() présent dans le script
+    
     
 
 # =========================
@@ -637,3 +637,81 @@ if SHOW_LEGENDS:
     tune_legend_alpha(leg)
 
 plt.tight_layout(); maybe_save(fig, "svr_epsilon_tube_demo.png"); plt.show()
+
+
+# ================================
+# 7bis) Comparaison du paramètre de marge (C petit vs grand)
+#      -> Deux fichiers pour LaTeX : svm_soft_margin_C_small.png / svm_soft_margin_C_large.png
+# ================================
+def soft_margin_compare_C(X, y, C_vals=(0.25, 80.0),
+                          names=("svm_soft_margin_C_small.png", "svm_soft_margin_C_large.png"),
+                          pad=PAD_DEFAULT):
+    for C, fname in zip(C_vals, names):
+        clf = SVC(kernel="linear", C=C).fit(X, y)
+        fig, ax = plt.subplots()
+        plot_decision_regions(ax, clf, X, pad=pad, fill=True, boundary=True, margins=True)
+        sc0, sc1 = plot_points(ax, X, y, with_legend=False)
+
+        # Vecteurs de support
+        sv = clf.support_vectors_
+        sv_sc = ax.scatter(sv[:, 0], sv[:, 1], s=110, facecolors='none',
+                           edgecolors="#111111", linewidths=1.8, label="Vecteurs de support")
+
+        if SHOW_LEGENDS:
+            boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
+            margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
+            leg = ax.legend([sc0, sc1, boundary_proxy, margin_proxy, sv_sc],
+                            ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
+                             "Marge (f(x)=±1)", "Vecteurs de support"],
+                            loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+            tune_legend_alpha(leg)
+
+        set_limits(ax, X, pad=pad)
+        plt.tight_layout(); maybe_save(fig, fname); plt.show()
+
+# Appel (même nuage quasi-séparable que ta Fig. 7)
+soft_margin_compare_C(X_qs, y_qs,
+                      C_vals=(0.010, 10000.0),
+                      names=("svm_soft_margin_C_small.png", "svm_soft_margin_C_large.png"))
+
+
+# ================================
+# 7quater) RBF – variation de γ (C fixé)
+#      -> svm_rbf_gamma_small.png / svm_rbf_gamma_large.png
+# ================================
+def rbf_compare_gamma(X, y,
+                      gammas=(0.2, 5.0),
+                      C_fixed=8.0,
+                      names=("svm_rbf_gamma_small.png", "svm_rbf_gamma_large.png"),
+                      pad=PAD_DEFAULT):
+    for gamma, fname in zip(gammas, names):
+        clf = SVC(kernel="rbf", C=C_fixed, gamma=gamma).fit(X, y)
+
+        fig, ax = plt.subplots()
+        plot_decision_regions(ax, clf, X, pad=pad, fill=True, boundary=True, margins=True)
+        sc0, sc1 = plot_points(ax, X, y, with_legend=False)
+
+        # Vecteurs de support
+        sv = clf.support_vectors_
+        sv_sc = ax.scatter(sv[:, 0], sv[:, 1], s=110, facecolors='none',
+                           edgecolors="#111111", linewidths=1.8, label="Vecteurs de support")
+
+        if SHOW_LEGENDS:
+            boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
+            margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
+            leg = ax.legend([sc0, sc1, boundary_proxy, margin_proxy, sv_sc],
+                            ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
+                             "Marge (f(x)=±1)", "Vecteurs de support"],
+                            loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+            tune_legend_alpha(leg)
+
+        set_limits(ax, X, pad=pad)
+        plt.tight_layout(); maybe_save(fig, fname); plt.show()
+
+# Exemple d’appel (mêmes 'moons' que la comparaison précédente)
+X_mo, y_mo = make_moons(n_samples=180, noise=0.18, random_state=42)
+rbf_compare_gamma(X_mo, y_mo,
+                  gammas=(0.2, 5.0),
+                  C_fixed=8.0,
+                  names=("svm_rbf_gamma_small.png", "svm_rbf_gamma_large.png"))
+
