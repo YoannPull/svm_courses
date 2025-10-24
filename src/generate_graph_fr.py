@@ -47,7 +47,7 @@ from sklearn.linear_model import Perceptron
 # Options globales
 # =========================
 SAVE_FIGS     = True           # Enregistrer les figures dans FIG_DIR
-FIG_DIR       = "figures_fr"      # Dossier de sortie pour les images
+FIG_DIR       = "figures_fr"   # Dossier de sortie pour les images
 FIG_DPI       = 300            # DPI des fichiers enregistrés
 SHOW_TITLES   = False          # Afficher les titres des figures
 SHOW_LEGENDS  = True           # Afficher les légendes
@@ -82,8 +82,6 @@ def maybe_save(fig, filename):
         # On ferme pour libérer la mémoire (et éviter toute fenêtre)
         plt.close(fig)
         plt.show = lambda *args, **kwargs: None
-    
-    
 
 # =========================
 # Style global Matplotlib
@@ -286,6 +284,30 @@ def draw_slack_vectors(ax, X, y01, w, b,
         labels.append((i, xi[i]))
     return arrows, labels
 
+# ---------- NOUVEAU : masques SV sur/dans la marge ----------
+def sv_on_in_masks(clf, X, y01, C, tol_alpha=None, tol_margin=1e-3):
+    """
+    Renvoie deux masques booléens (len(X)):
+      - sv_on : SV sur la marge (y f(x) ≈ 1)
+      - sv_in : Vecteurs dans la marge (y f(x) < 1)
+    Détection des SV via α_i>0 avec une tolérance robuste (relative au max(α)).
+    """
+    y = 2*y01 - 1
+    f = clf.decision_function(X)  # f(x)
+    alpha = np.zeros(len(X))
+    if getattr(clf, "support_", None) is not None:
+        alpha[clf.support_] = np.abs(clf.dual_coef_).ravel()
+
+    # Tolérance robuste: relative à l'échelle observée des alpha (et non à C)
+    if tol_alpha is None:
+        maxa = float(np.max(alpha)) if alpha.size else 0.0
+        tol_alpha = max(1e-12, 1e-6 * max(1.0, maxa))
+
+    sv = alpha > tol_alpha
+    sv_on = sv & (np.abs(y * f - 1.0) <= tol_margin)  # sur la marge
+    sv_in = sv & (y * f < 1.0 - tol_margin)           # à l’intérieur de la marge (ou mal classé)
+    return sv_on, sv_in
+
 # ================================================================================
 # 1) Séparable — points uniquement (zoom rapproché)
 #    -> Graphique : nuage de points (2 classes). Fichier : svm_1_separable_points.png
@@ -365,40 +387,57 @@ plt.tight_layout(); maybe_save(fig5, "svm_5_perceptron_multi_hyperplans.png"); p
 
 # ================================================================================
 # 6) Séparable — marges & vecteurs de support + segment M
-#    -> Graphique : f(x)=0, marges f(x)=±1, SV entourés, segment M perpendiculaire.
+#    -> Graphique : f(x)=0, marges f(x)=±1, SV sur/dans la marge (noir/rouge), segment M.
 #       Fichier : svm_6_marges_sv_M.png
 # ================================================================================
-clf_margin = SVC(kernel="linear", C=1e6).fit(X_sep, y_sep)
+C_hard = 1e6
+clf_margin = SVC(kernel="linear", C=C_hard).fit(X_sep, y_sep)
 w = clf_margin.coef_[0]; b = clf_margin.intercept_[0]
 fig6, ax6 = plt.subplots()
 plot_decision_regions(ax6, clf_margin, X_sep, pad=PAD_DEFAULT, fill=True, boundary=True, margins=True)
 sc0, sc1 = plot_points(ax6, X_sep, y_sep,
                        title="Séparable – marges, SV et longueur M (1/||w||)",
                        with_legend=False)
-sv = clf_margin.support_vectors_
-sv_sc = ax6.scatter(sv[:, 0], sv[:, 1], s=110, facecolors='none',
-                    edgecolors="#111111", linewidths=1.8, label="Vecteurs de support")
-sv0 = sv[0]
-ax6.annotate("Vecteur de support",
-             xy=(sv0[0], sv0[1]), xytext=(sv0[0]+0.40, sv0[1]+0.40),
-             arrowprops=dict(arrowstyle="->", lw=1.2, color="#111111"),
-             fontsize=11)
+
+# Cerclage SV : noir = sur marge ; rouge = dans marge
+sv_on_6, sv_in_6 = sv_on_in_masks(clf_margin, X_sep, y_sep, C_hard)
+if np.any(sv_on_6):
+    ax6.scatter(X_sep[sv_on_6, 0], X_sep[sv_on_6, 1], s=110, facecolors='none',
+                edgecolors="#111111", linewidths=1.8, label="SV sur la marge")
+if np.any(sv_in_6):
+    ax6.scatter(X_sep[sv_in_6, 0], X_sep[sv_in_6, 1], s=110, facecolors='none',
+                edgecolors="#ef4444", linewidths=1.8, label="Vecteurs dans la marge")
+
+# Annotation d'un SV + segment perpendiculaire M
+sv_indices = np.where(sv_on_6 | sv_in_6)[0]
+if sv_indices.size > 0:
+    sv0 = X_sep[sv_indices[0]]
+    ax6.annotate("Vecteur de support",
+                 xy=(sv0[0], sv0[1]), xytext=(sv0[0]+0.40, sv0[1]+0.40),
+                 arrowprops=dict(arrowstyle="->", lw=1.2, color="#111111"),
+                 fontsize=11)
 draw_margin_perpendicular(ax6, w, b, X_sep, color="blue")
+
+# Légende
 if SHOW_LEGENDS:
     boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
     margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
-    leg6 = ax6.legend([sc0, sc1, boundary_proxy, margin_proxy, sv_sc],
-                      ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
-                       "Marge (f(x)=±1)", "Vecteurs de support"],
-                      loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+    handles = [sc0, sc1, boundary_proxy, margin_proxy]
+    if np.any(sv_on_6):
+        handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                              markeredgecolor="#111111", markersize=9, label="SV sur la marge"))
+    if np.any(sv_in_6):
+        handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                              markeredgecolor="#ef4444", markersize=9, label="Vecteurs dans la marge"))
+    leg6 = ax6.legend(handles=handles, loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
     tune_legend_alpha(leg6)
+
 set_limits(ax6, X_sep, pad=PAD_DEFAULT)
 plt.tight_layout(); maybe_save(fig6, "svm_6_marges_sv_M.png"); plt.show()
 
 # ================================================================================
 # 7) Soft margin (SVM linéaire, C modéré) + vecteurs de slack ξ_i
-#    -> Graphique : f(x)=0, marges ±1, SV "libres" (0<λ<C) vs SV saturés (λ≈C),
-#       flèches ξ_i depuis les points violant la marge vers la marge.
+#    -> Graphique : f(x)=0, marges ±1, cerclage SV sur/dans la marge + flèches ξ_i
 #       Fichier : svm_7_soft_margin_slack.png
 # ================================================================================
 C_soft = 1.0
@@ -411,24 +450,16 @@ sc0, sc1 = plot_points(ax7, X_qs, y_qs,
                        title=f"Soft margin – SVM linéaire (C={C_soft}) et vecteurs de slack $\\xi_i$",
                        with_legend=False)
 
-# --- Cerclage uniquement des vrais vecteurs de support (λ>0) ---
-sv_idx = clf_soft.support_                   # indices des SV
-lam_sv = np.abs(clf_soft.dual_coef_).ravel() # λ pour les SV (même ordre que sv_idx)
-lam = np.zeros(len(X_qs))
-lam[sv_idx] = lam_sv
+# Cerclage : noir = sur marge ; rouge = dans marge
+sv_on_7, sv_in_7 = sv_on_in_masks(clf_soft, X_qs, y_qs, C_soft)
+if np.any(sv_on_7):
+    ax7.scatter(X_qs[sv_on_7, 0], X_qs[sv_on_7, 1], s=110, facecolors='none',
+                edgecolors="#111111", linewidths=1.8, label="SV sur la marge")
+if np.any(sv_in_7):
+    ax7.scatter(X_qs[sv_in_7, 0], X_qs[sv_in_7, 1], s=110, facecolors='none',
+                edgecolors="#ef4444", linewidths=1.8, label="Vecteurs dans la marge")
 
-eps_lam = 1e-5
-cat0 = lam < eps_lam                                   # non-SV (pas de cercle)
-catF = (lam >= eps_lam) & (lam < C_soft - eps_lam)     # SV libres 0<λ<C (en noir)
-catC = lam >= (C_soft - eps_lam)                       # SV à la borne λ≈C (en rouge)
-
-# Cercles sur SV uniquement
-ax7.scatter(X_qs[catF, 0], X_qs[catF, 1], s=110, facecolors='none',
-            edgecolors="#111111", linewidths=1.8, label="SV (0<λ<C)")
-ax7.scatter(X_qs[catC, 0], X_qs[catC, 1], s=110, facecolors='none',
-            edgecolors="#ef4444", linewidths=1.8, label="SV (λ≈C)")
-
-# Vecteurs de slack (flèches, moins nombreux + espacés)
+# Vecteurs de slack (flèches)
 _ = draw_slack_vectors(ax7, X_qs, y_qs, w_soft, b_soft,
                        max_k=MAX_SLACK_ARROWS,
                        min_xi=MIN_SLACK_TO_DRAW,
@@ -441,10 +472,14 @@ if SHOW_LEGENDS:
     boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
     margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
     slack_proxy    = Line2D([0], [0], color=SLACK_COLOR, lw=2.0, label=r"Vecteurs de slack $\xi_i$")
-    leg7 = ax7.legend([sc0, sc1, boundary_proxy, margin_proxy, slack_proxy],
-                      ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
-                       "Marge (f(x)=±1)", r"Vecteurs de slack $\xi_i$"],
-                      loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+    handles = [sc0, sc1, boundary_proxy, margin_proxy, slack_proxy]
+    if np.any(sv_on_7):
+        handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                              markeredgecolor="#111111", markersize=9, label="SV sur la marge"))
+    if np.any(sv_in_7):
+        handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                              markeredgecolor="#ef4444", markersize=9, label="Vecteurs dans la marge"))
+    leg7 = ax7.legend(handles=handles, loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
     tune_legend_alpha(leg7)
 
 set_limits(ax7, X_qs, pad=PAD_DEFAULT)
@@ -646,30 +681,38 @@ plt.tight_layout(); maybe_save(fig, "svr_epsilon_tube_demo.png"); plt.show()
 def soft_margin_compare_C(X, y, C_vals=(0.25, 80.0),
                           names=("svm_soft_margin_C_small.png", "svm_soft_margin_C_large.png"),
                           pad=PAD_DEFAULT):
-    for C, fname in zip(C_vals, names):
-        clf = SVC(kernel="linear", C=C).fit(X, y)
+    for C_val, fname in zip(C_vals, names):
+        clf = SVC(kernel="linear", C=C_val).fit(X, y)
         fig, ax = plt.subplots()
         plot_decision_regions(ax, clf, X, pad=pad, fill=True, boundary=True, margins=True)
         sc0, sc1 = plot_points(ax, X, y, with_legend=False)
 
-        # Vecteurs de support
-        sv = clf.support_vectors_
-        sv_sc = ax.scatter(sv[:, 0], sv[:, 1], s=110, facecolors='none',
-                           edgecolors="#111111", linewidths=1.8, label="Vecteurs de support")
+        # Vecteurs de support : noir = sur marge ; rouge = dans marge
+        sv_on, sv_in = sv_on_in_masks(clf, X, y, C_val)
+        if np.any(sv_on):
+            ax.scatter(X[sv_on, 0], X[sv_on, 1], s=110, facecolors='none',
+                       edgecolors="#111111", linewidths=1.8, label="SV sur la marge")
+        if np.any(sv_in):
+            ax.scatter(X[sv_in, 0], X[sv_in, 1], s=110, facecolors='none',
+                       edgecolors="#ef4444", linewidths=1.8, label="Vecteurs dans la marge")
 
         if SHOW_LEGENDS:
             boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
             margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
-            leg = ax.legend([sc0, sc1, boundary_proxy, margin_proxy, sv_sc],
-                            ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
-                             "Marge (f(x)=±1)", "Vecteurs de support"],
-                            loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+            handles = [sc0, sc1, boundary_proxy, margin_proxy]
+            if np.any(sv_on):
+                handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                                      markeredgecolor="#111111", markersize=9, label="SV sur la marge"))
+            if np.any(sv_in):
+                handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                                      markeredgecolor="#ef4444", markersize=9, label="Vecteurs dans la marge"))
+            leg = ax.legend(handles=handles, loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
             tune_legend_alpha(leg)
 
         set_limits(ax, X, pad=pad)
         plt.tight_layout(); maybe_save(fig, fname); plt.show()
 
-# Appel (même nuage quasi-séparable que ta Fig. 7)
+# Appel (même nuage quasi-séparable que la Fig. 7)
 soft_margin_compare_C(X_qs, y_qs,
                       C_vals=(0.010, 10000.0),
                       names=("svm_soft_margin_C_small.png", "svm_soft_margin_C_large.png"))
@@ -691,18 +734,26 @@ def rbf_compare_gamma(X, y,
         plot_decision_regions(ax, clf, X, pad=pad, fill=True, boundary=True, margins=True)
         sc0, sc1 = plot_points(ax, X, y, with_legend=False)
 
-        # Vecteurs de support
-        sv = clf.support_vectors_
-        sv_sc = ax.scatter(sv[:, 0], sv[:, 1], s=110, facecolors='none',
-                           edgecolors="#111111", linewidths=1.8, label="Vecteurs de support")
+        # Vecteurs de support : noir = sur marge ; rouge = dans marge
+        sv_on, sv_in = sv_on_in_masks(clf, X, y, C_fixed)
+        if np.any(sv_on):
+            ax.scatter(X[sv_on, 0], X[sv_on, 1], s=110, facecolors='none',
+                       edgecolors="#111111", linewidths=1.8, label="SV sur la marge")
+        if np.any(sv_in):
+            ax.scatter(X[sv_in, 0], X[sv_in, 1], s=110, facecolors='none',
+                       edgecolors="#ef4444", linewidths=1.8, label="Vecteurs dans la marge")
 
         if SHOW_LEGENDS:
             boundary_proxy = Line2D([0], [0], color="#111111", lw=2.0, label="Hyperplan f(x)=0")
             margin_proxy   = Line2D([0], [0], color="#111111", lw=1.6, ls="--", label="Marge (f(x)=±1)")
-            leg = ax.legend([sc0, sc1, boundary_proxy, margin_proxy, sv_sc],
-                            ["Classe 0", "Classe 1", "Hyperplan f(x)=0",
-                             "Marge (f(x)=±1)", "Vecteurs de support"],
-                            loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
+            handles = [sc0, sc1, boundary_proxy, margin_proxy]
+            if np.any(sv_on):
+                handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                                      markeredgecolor="#111111", markersize=9, label="SV sur la marge"))
+            if np.any(sv_in):
+                handles.append(Line2D([], [], marker="o", lw=0, markerfacecolor='none',
+                                      markeredgecolor="#ef4444", markersize=9, label="Vecteurs dans la marge"))
+            leg = ax.legend(handles=handles, loc=LEGEND_LOC, framealpha=LEGEND_FRAME_ALPHA)
             tune_legend_alpha(leg)
 
         set_limits(ax, X, pad=pad)
@@ -714,4 +765,3 @@ rbf_compare_gamma(X_mo, y_mo,
                   gammas=(0.2, 5.0),
                   C_fixed=8.0,
                   names=("svm_rbf_gamma_small.png", "svm_rbf_gamma_large.png"))
-
